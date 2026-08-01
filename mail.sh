@@ -92,6 +92,36 @@ if ! grep -q "local.conf" /etc/dovecot/dovecot.conf 2>/dev/null; then
 	echo "!include local.conf" >> /etc/dovecot/dovecot.conf
 fi
 
+# SPECIAL-USE FOLDERS (Sent, Drafts, Trash, Junk)
+if ! grep -q "special_use" /etc/dovecot/local.conf 2>/dev/null; then
+	printf "\n\n#############################\n"
+	echo "Adding Sent/Drafts/Trash/Junk as special-use folders, so mail clients"
+	echo "auto-recognize them by role instead of showing four unlabeled folders."
+	cat >> /etc/dovecot/local.conf <<FOLDEREOF
+
+namespace inbox {
+	inbox = yes
+
+	mailbox Sent {
+		special_use = \Sent
+		auto = subscribe
+	}
+	mailbox Drafts {
+		special_use = \Drafts
+		auto = subscribe
+	}
+	mailbox Trash {
+		special_use = \Trash
+		auto = subscribe
+	}
+	mailbox Junk {
+		special_use = \Junk
+		auto = subscribe
+	}
+}
+FOLDEREOF
+fi
+
 rcctl enable dovecot
 rcctl restart dovecot
 
@@ -99,6 +129,14 @@ if ! rcctl check dovecot >/dev/null 2>&1; then
 	printf "\n\n#############################\n"
 	echo "dovecot did not start. Check 'tail -30 /var/log/maillog' for the error."
 	exit 1
+fi
+
+# CREATE THE SPECIAL-USE FOLDERS NOW, rather than waiting for a client to lazily trigger it
+if [ ! -f $(my foldersok) ]; then
+	for box in Sent Drafts Trash Junk; do
+		doveadm mailbox create -u $mailuser $box 2>/dev/null
+	done
+	touch $(my foldersok)
 fi
 
 # CONFIGURE OPENSMTPD: SUBMISSION + AUTH
