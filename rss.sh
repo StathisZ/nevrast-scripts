@@ -70,6 +70,17 @@ if [ ! -f $(my sslok) ]; then
 	touch $(my sslok)
 fi
 
+# CHROOT: httpd/php-fpm run chrooted to /var/www, so the cainfo path above
+# points nowhere until /etc/resolv.conf and /etc/ssl/cert.pem are also
+# copied inside the chroot. Without this, outbound HTTPS from PHP still
+# fails even though cainfo is set correctly.
+if [ ! -f $(my chrootok) ]; then
+	mkdir -p /var/www/etc/ssl
+	cp /etc/resolv.conf /var/www/etc/resolv.conf
+	cp /etc/ssl/cert.pem /var/www/etc/ssl/cert.pem
+	touch $(my chrootok)
+fi
+
 rcctl enable $phpsvc
 rcctl restart $phpsvc
 
@@ -175,6 +186,13 @@ if [ ! -f $(my cronok) ]; then
 	(crontab -l 2>/dev/null; echo "*/15 * * * * $phpbin -f /var/www/freshrss/app/actualize_script.php > /dev/null 2>&1") | crontab -
 	touch $(my cronok)
 	echo "Feeds will now refresh automatically every 15 minutes."
+fi
+
+# KEEP THE CHROOT COPIES FRESH (resolv.conf and cert.pem can go stale)
+if [ ! -f $(my chrootcronok) ]; then
+	(crontab -l 2>/dev/null; echo "0 3 * * * cp /etc/resolv.conf /var/www/etc/resolv.conf; cp /etc/ssl/cert.pem /var/www/etc/ssl/cert.pem") | crontab -
+	touch $(my chrootcronok)
+	echo "resolv.conf and cert.pem inside the chroot will now refresh daily at 3am."
 fi
 
 printf "\n\n#############################\n"
