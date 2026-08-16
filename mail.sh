@@ -184,13 +184,26 @@ else
 	exit 1
 fi
 
-# PF: ALLOW IMAP + SUBMISSION
+# PF: ALLOW IMAP + SUBMISSION, RATE-LIMITED AGAINST BRUTE-FORCING
+if ! grep -q "table <bruteforce>" /etc/pf.conf 2>/dev/null; then
+	printf "\n\n#############################\n"
+	echo "Adding a <bruteforce> pf table + block rule (skipped if you already have one,"
+	echo "e.g. from hardening SSH first -- this reuses the same table either way)."
+	cat >> /etc/pf.conf <<TABLEEOF
+table <bruteforce> persist
+block quick from <bruteforce>
+TABLEEOF
+fi
+
 if ! grep -qE "port \{[^}]*\b(587|993)\b" /etc/pf.conf 2>/dev/null; then
 	printf "\n\n#############################\n"
 	echo "Adding a pf rule for ports 587 and 993 (pf evaluates 'quick' rules in order,"
 	echo "so an extra overlapping rule here is harmless even if one already covers these)."
+	echo "More than 8 new connections in 30 seconds from one IP adds it to <bruteforce> --"
+	echo "loose enough for normal mail client reconnects, tight enough to stop scanners."
 	cat >> /etc/pf.conf <<PFEOF
-pass quick proto tcp from any to \$if port { 587, 993 } flags S/SA keep state
+pass quick proto tcp from any to \$if port { 587, 993 } flags S/SA keep state \\
+	(max-src-conn 20, max-src-conn-rate 8/30, overload <bruteforce> flush global)
 PFEOF
 	pfctl -nf /etc/pf.conf && pfctl -f /etc/pf.conf
 fi
