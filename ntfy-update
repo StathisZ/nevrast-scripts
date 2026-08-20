@@ -1,0 +1,105 @@
+#!/bin/sh
+# ntfy-update - build and install the latest tagged ntfy release from the
+# persistent /root/ntfy clone. On-demand only, run manually as root
+# (doas /usr/local/sbin/ntfy-update) -- deliberately not wired into cron.
+# check-selfhosted (cron, weekly) only tells you a new release exists;
+# this is the script that actually applies it, when you choose to.
+#
+# Explicit PATH for the same reason as every other notifying script on this
+# box: curl (and go/git, here) live in /usr/local/bin, which cron's default
+# PATH doesn't include. Doesn't matter for a manual doas run, but keeps this
+# script correct if that ever changes.
+PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
+
+# Reads NTFY_URL/NTFY_TOPIC from /etc/ntfy/notify.env -- create it yourself
+# first (not part of this script, not committed anywhere):
+#   printf 'NTFY_TOPIC=yourtopic\n' > /etc/ntfy/notify.env; chmod 600 /etc/ntfy/notify.env
+# Treat the topic as a secret, not a label (see ntfy-tutorial.html, step 8).
+# Not hardcoded here on purpose: this script is published, your topic shouldn't be.
+NTFY_URL="http://127.0.0.1:8091"
+[ -r /etc/ntfy/notify.env ] && . /etc/ntfy/notify.env
+: "${NTFY_TOPIC:?set NTFY_TOPIC in /etc/ntfy/notify.env first}"
+SRC=/root/ntfy
+BIN=/usr/local/bin/ntfy
+KEEP=3
+
+notify() {
+curl -s -H "Priority: ${2:-default}" -d "$1" "$NTFY_URL/$NTFY_TOPIC" > /dev/null
+}
+
+cd "$SRC" || { echo "no clone at $SRC"; exit 1; }
+
+installed=$(ntfy --version 2>/dev/null | sed -n 's/^ntfy version v\([0-9.]*\).*/\1/p')
+git fetch --tags -q || { echo "git fetch failed"; notify "ntfy-update on $(hostname) FAILED: git fetch failed" urgent; exit 1; }
+latest_tag=$(git tag --sort=-v:refname | head -1)
+latest=$(echo "$latest_tag" | sed 's/^v//')
+
+if [ -z "$latest" ]; then
+echo "could not determine latest tag"
+notify "ntfy-update on $(hostname) FAILED: could not determine latest tag" urgent
+exit 1
+fi
+
+if [ "$installed" = "$latest" ]; then
+echo "already at latest ($installed)"
+notify "$(hostname): ntfy already at latest ($installed), nothing to build"
+exit 0
+fi
+
+echo "updating ntfy $installed -> $latest"
+
+git checkout -q "$latest_tag" || { notify "ntfy-update on $(hostname) FAILED: git checkout $latest_tag failed" urgent; exit 1; }
+
+mkdir -p dist/ntfy_openbsd_amd64 server/docs server/site
+touch server/docs/index.html server/site/app.html
+
+# -X main.version/commit/date: main.go defaults these to "dev"/"unknown"
+# unless injected at build time -- without this, --version (and every
+# version comparison in this script and check-selfhosted) breaks. Found
+# 2026-08-20; the published ntfy-tutorial.html's build command is missing
+# this too and needs the same fix.
+build_commit=$(git rev-parse --short HEAD)
+build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if ! CGO_ENABLED=1 go build -o dist/ntfy_openbsd_amd64/ntfy \
+	-tags sqlite_omit_load_extension,osusergo,netgo \
+	-ldflags "-X main.version=$latest_tag -X main.commit=$build_commit -X main.date=$build_date -linkmode=external -extldflags=-static -s -w"; then
+notify "ntfy-update on $(hostname) FAILED: build errored (still running $installed, nothing installed)" urgent
+exit 1
+fi
+
+built=$(dist/ntfy_openbsd_amd64/ntfy --version 2>/dev/null | sed -n 's/^ntfy version v\([0-9.]*\).*/\1/p')
+if [ "$built" != "$latest" ]; then
+notify "ntfy-update on $(hostname) FAILED: built binary reports '$built', expected '$latest' -- not installing (still running $installed)" urgent
+exit 1
+fi
+
+stamp=$(date +%Y%m%d-%H%M%S)
+backup="$BIN.bak.$installed-$stamp"
+cp "$BIN" "$backup"
+
+mv dist/ntfy_openbsd_amd64/ntfy "$BIN"
+chown root:bin "$BIN"
+chmod 755 "$BIN"
+
+rcctl restart ntfy > /dev/null 2>&1
+
+if rcctl check ntfy > /dev/null 2>&1; then
+notify "ntfy updated on $(hostname): $installed -> $latest"
+echo "updated: $installed -> $latest"
+else
+echo "restart after update failed -- rolling back to $installed"
+cp "$backup" "$BIN"
+chown root:bin "$BIN"
+chmod 755 "$BIN"
+rcctl restart ntfy > /dev/null 2>&1
+if rcctl check ntfy > /dev/null 2>&1; then
+notify "ntfy-update on $(hostname) FAILED: $latest wouldn't start, rolled back to $installed successfully" urgent
+else
+echo "ROLLBACK ALSO FAILED -- ntfy is down, manual intervention needed, notify unavailable"
+exit 1
+fi
+exit 1
+fi
+
+# keep last $KEEP binary backups, prune older
+ls -t "$BIN".bak.* 2>/dev/null | tail -n +$((KEEP + 1)) | xargs rm -f
