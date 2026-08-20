@@ -1,21 +1,14 @@
 #!/bin/sh
-# ntfy-update - build and install the latest tagged ntfy release from the
-# persistent /root/ntfy clone. On-demand only, run manually as root
-# (doas /usr/local/sbin/ntfy-update) -- deliberately not wired into cron.
-# check-selfhosted (cron, weekly) only tells you a new release exists;
-# this is the script that actually applies it, when you choose to.
-#
-# Explicit PATH for the same reason as every other notifying script on this
-# box: curl (and go/git, here) live in /usr/local/bin, which cron's default
-# PATH doesn't include. Doesn't matter for a manual doas run, but keeps this
-# script correct if that ever changes.
+# ntfy-update - rebuild/reinstall ntfy from the latest tagged release.
+# On-demand only (doas /usr/local/sbin/ntfy-update), not cron'd --
+# check-selfhosted just reports a new release exists; this applies it.
+
+# curl/go/git live in /usr/local/bin; cron's default PATH excludes it.
 PATH="/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
 
-# Reads NTFY_URL/NTFY_TOPIC from /etc/ntfy/notify.env -- create it yourself
-# first (not part of this script, not committed anywhere):
-#   printf 'NTFY_TOPIC=yourtopic\n' > /etc/ntfy/notify.env; chmod 600 /etc/ntfy/notify.env
-# Treat the topic as a secret, not a label (see ntfy-tutorial.html, step 8).
-# Not hardcoded here on purpose: this script is published, your topic shouldn't be.
+# Reads NTFY_URL/NTFY_TOPIC from /etc/ntfy/notify.env (create it yourself:
+# printf 'NTFY_TOPIC=yourtopic\n' > /etc/ntfy/notify.env; chmod 600 same).
+# Treat the topic as a secret, not a label -- see ntfy-tutorial.html, step 8.
 NTFY_URL="http://127.0.0.1:8091"
 [ -r /etc/ntfy/notify.env ] && . /etc/ntfy/notify.env
 : "${NTFY_TOPIC:?set NTFY_TOPIC in /etc/ntfy/notify.env first}"
@@ -53,11 +46,9 @@ git checkout -q "$latest_tag" || { notify "ntfy-update on $(hostname) FAILED: gi
 mkdir -p dist/ntfy_openbsd_amd64 server/docs server/site
 touch server/docs/index.html server/site/app.html
 
-# -X main.version/commit/date: main.go defaults these to "dev"/"unknown"
-# unless injected at build time -- without this, --version (and every
-# version comparison in this script and check-selfhosted) breaks. Found
-# 2026-08-20; the published ntfy-tutorial.html's build command is missing
-# this too and needs the same fix.
+# main.go defaults version/commit/date to "dev"/"unknown" unless injected
+# at build time -- without this, --version (and every comparison here and
+# in check-selfhosted) breaks.
 build_commit=$(git rev-parse --short HEAD)
 build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if ! CGO_ENABLED=1 go build -o dist/ntfy_openbsd_amd64/ntfy \
